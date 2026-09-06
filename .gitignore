@@ -1,0 +1,8 @@
+.venv/
+dm_control/
+Gymnasium/
+Arcade-Learning-Environment/
+docs/ALE/
+__pycache__/
+*.pyc
+.reasonix/
