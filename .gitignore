@@ -6,3 +6,4 @@ docs/ALE/
 __pycache__/
 *.pyc
 .reasonix/
+data/
