@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from dm_control import suite
 
 from networks import Actor, Critic, reparam_sample, soft_update
@@ -35,6 +36,17 @@ from buffer import ReplayBuffer
 ACT_DIM = 6
 RENDER_H = RENDER_W = 100
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class _Temperature(nn.Module):
+    """可训练 log 温度标量，随网络统一 .to(device)；forward 返回叶子张量。"""
+
+    def __init__(self, init_log_alpha):
+        super().__init__()
+        self.log_alpha = nn.Parameter(torch.tensor([init_log_alpha], dtype=torch.float32))
+
+    def forward(self):
+        return self.log_alpha
 
 
 def make_env(seed):
@@ -66,7 +78,7 @@ def random_action():
 def select_action(actor, state_u8, sample):
     """state (9,84,84) uint8 → action (6,) float64；sample 采样 tanh(μ+σε) 否则取 tanh(μ)。"""
     device = next(actor.parameters()).device
-    obs = obs_to_tensor(state_u8).unsqueeze(0).to(device)
+    obs = obs_to_tensor(state_u8, device).unsqueeze(0)
     with torch.no_grad():
         mu, log_std = actor(obs)
         if sample:
@@ -170,8 +182,10 @@ def main():
     target = copy.deepcopy(critic)
     opt_actor = torch.optim.Adam(actor.parameters(), lr=args.lr)
     opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr)
-    log_alpha = torch.tensor([math.log(args.init_temperature)], requires_grad=True).to(device)
-    opt_alpha = torch.optim.Adam([log_alpha], lr=args.alpha_lr, betas=(0.5, 0.999))
+    temp_module = _Temperature(math.log(args.init_temperature)).to(device)
+    log_alpha = temp_module()
+    opt_alpha = torch.optim.Adam(
+        temp_module.parameters(), lr=args.alpha_lr, betas=(0.5, 0.999))
     buffer = ReplayBuffer(args.replay_size, ACT_DIM)
     target_entropy = -ACT_DIM
 
@@ -224,8 +238,8 @@ def main():
                 obs, act, rew, next_obs, done = buffer.sample(args.batch_size)
                 ql, pl, al, temp = train_step(
                     actor, critic, target, log_alpha, opt_actor, opt_critic, opt_alpha,
-                    obs_to_tensor(obs).to(device), torch.from_numpy(act).to(device),
-                    torch.from_numpy(rew).to(device), obs_to_tensor(next_obs).to(device),
+                    obs_to_tensor(obs, device), torch.from_numpy(act).to(device),
+                    torch.from_numpy(rew).to(device), obs_to_tensor(next_obs, device),
                     torch.from_numpy(done).to(device),
                     args.gamma, args.tau, target_entropy)
                 qsum += ql

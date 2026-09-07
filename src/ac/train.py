@@ -37,9 +37,9 @@ def render_frame(env):
 
 
 def select_action(model, state, explore):
-    """state (9,84,84) -> action (6,) float64；explore 采样 tanh(μ+σε) 否则取 tanh(μ)。"""
+    """state (9,84,84) uint8 -> action (6,) float64；explore 采样 tanh(μ+σε) 否则取 tanh(μ)。"""
     device = next(model.parameters()).device
-    obs = torch.from_numpy(state).unsqueeze(0).to(device)
+    obs = torch.from_numpy(state).to(device=device).float().div_(255.0).unsqueeze(0)
     with torch.no_grad():
         mu, log_std, _ = model(obs)
         if explore:
@@ -87,7 +87,8 @@ def collect_episode(model, env, stack, action_repeat, env_budget):
 
 def update(model, optimizer, buffer, gamma, entropy_coef):
     device = next(model.parameters()).device
-    states = torch.from_numpy(np.stack([t[0] for t in buffer])).to(device)
+    states = torch.from_numpy(np.stack([t[0] for t in buffer])).to(
+        device=device).float().div_(255.0)
     actions = torch.from_numpy(np.stack([t[1] for t in buffer]).astype(np.float32)).to(device)
     rewards = torch.from_numpy(np.array([t[2] for t in buffer], dtype=np.float32)).to(device)
     done = torch.from_numpy(np.array([t[3] for t in buffer], dtype=np.bool_)).to(device)

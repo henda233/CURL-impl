@@ -36,6 +36,6 @@ class FrameStack:
         return np.concatenate(self._frames, axis=2).transpose(2, 0, 1)
 
 
-def obs_to_tensor(obs):
-    """(...,9,84,84) uint8 帧栈 → float32 张量（×(1/255)）。"""
-    return torch.from_numpy(np.asarray(obs)).float().div_(255.0)
+def obs_to_tensor(obs, device):
+    """(...,9,84,84) uint8 帧栈 → device 上的 float32 张量（归一化在 device 执行）。"""
+    return torch.from_numpy(np.asarray(obs)).to(device=device).float().div_(255.0)

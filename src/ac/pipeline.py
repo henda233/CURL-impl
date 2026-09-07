@@ -1,6 +1,7 @@
-"""像素观测预处理：center crop + 帧栈 + 归一化。
+"""像素观测预处理：center crop + 3 帧栈 uint8。
 
-AC 基线不做 random crop（决策见 AC 实现复盘），训练与评估统一 center crop。
+归一化延迟至张量进网络时（搬运到目标 device 后）执行，帧以 uint8 保存，
+避免 CPU 侧 float32 归一化造成 4 倍搬运与存储冗余。与 SAC 管线一致。
 """
 
 import numpy as np
@@ -16,23 +17,19 @@ def center_crop(frame_hwc_uint8):
     return frame_hwc_uint8[OFFSET:OFFSET + CROP, OFFSET:OFFSET + CROP]
 
 
-def _to_chw_float(crop):
-    return crop.astype(np.float32).transpose(2, 0, 1) * (1.0 / 255.0)
-
-
 class FrameStack:
-    """维护最近 FRAMES 帧的 (9,84,84) float32 观测（旧帧在前）。"""
+    """维护最近 FRAMES 帧 center-crop 后的 uint8 帧（HWC），state() 拼成 (9,84,84) uint8。"""
 
     def __init__(self):
         self._frames = []
 
     def reset(self, frame_hwc_uint8):
-        first = _to_chw_float(center_crop(frame_hwc_uint8))
+        first = center_crop(frame_hwc_uint8)
         self._frames = [first.copy() for _ in range(FRAMES)]
 
     def push(self, frame_hwc_uint8):
         self._frames.pop(0)
-        self._frames.append(_to_chw_float(center_crop(frame_hwc_uint8)))
+        self._frames.append(center_crop(frame_hwc_uint8))
 
     def state(self):
-        return np.concatenate(self._frames, axis=0)
+        return np.concatenate(self._frames, axis=2).transpose(2, 0, 1)
