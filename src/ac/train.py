@@ -38,7 +38,8 @@ def render_frame(env):
 
 def select_action(model, state, explore):
     """state (9,84,84) -> action (6,) float64；explore 采样 tanh(μ+σε) 否则取 tanh(μ)。"""
-    obs = torch.from_numpy(state).unsqueeze(0)
+    device = next(model.parameters()).device
+    obs = torch.from_numpy(state).unsqueeze(0).to(device)
     with torch.no_grad():
         mu, log_std, _ = model(obs)
         if explore:
@@ -46,7 +47,7 @@ def select_action(model, state, explore):
         else:
             u = mu
         action = torch.tanh(u)
-    return action[0].numpy().astype(np.float64)
+    return action[0].cpu().numpy().astype(np.float64)
 
 
 def run_block(env, stack, action, action_repeat):
@@ -85,10 +86,11 @@ def collect_episode(model, env, stack, action_repeat, env_budget):
 
 
 def update(model, optimizer, buffer, gamma, entropy_coef):
-    states = torch.from_numpy(np.stack([t[0] for t in buffer]))
-    actions = torch.from_numpy(np.stack([t[1] for t in buffer]).astype(np.float32))
-    rewards = torch.from_numpy(np.array([t[2] for t in buffer], dtype=np.float32))
-    done = torch.from_numpy(np.array([t[3] for t in buffer], dtype=np.bool_))
+    device = next(model.parameters()).device
+    states = torch.from_numpy(np.stack([t[0] for t in buffer])).to(device)
+    actions = torch.from_numpy(np.stack([t[1] for t in buffer]).astype(np.float32)).to(device)
+    rewards = torch.from_numpy(np.array([t[2] for t in buffer], dtype=np.float32)).to(device)
+    done = torch.from_numpy(np.array([t[3] for t in buffer], dtype=np.bool_)).to(device)
 
     mu, log_std, v = model(states)
     with torch.no_grad():
@@ -132,6 +134,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--entropy-coef", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（不传则 cuda 可用时自动启用）")
     parser.add_argument("--smoke", action="store_true", help="短跑自检参数覆盖")
     args = parser.parse_args()
     if args.smoke:
@@ -139,10 +142,14 @@ def main():
         args.eval_interval = 600
         args.eval_episodes = 1
 
+    if args.gpu and not torch.cuda.is_available():
+        parser.error("--gpu requested but CUDA is not available")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     env = make_env(args.seed)
-    model = ActorCritic()
+    model = ActorCritic().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -150,9 +157,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("[ac-train] out=%s" % out_dir)
-    print("[ac-train] cfg seed=%d max_env_steps=%d action_repeat=%d lr=%g gamma=%g "
+    print("[ac-train] cfg device=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g gamma=%g "
           "entropy_coef=%g epochs=%d eval_interval=%d eval_episodes=%d" % (
-              args.seed, args.max_env_steps, args.action_repeat, args.lr, args.gamma,
+              device, args.seed, args.max_env_steps, args.action_repeat, args.lr, args.gamma,
               args.entropy_coef, args.epochs, args.eval_interval, args.eval_episodes))
 
     stack = FrameStack()
@@ -182,9 +189,10 @@ def main():
             returns = evaluate(model, env, args.action_repeat, args.eval_episodes)
             mean_return = float(np.mean(returns))
             meta = {
-                "seed": args.seed, "env_steps": env_steps, "episodes": episodes,
-                "mean_return": mean_return, "eval_episodes": len(returns),
-                "action_repeat": args.action_repeat, "entropy_coef": args.entropy_coef,
+                "seed": args.seed, "device": device, "env_steps": env_steps,
+                "episodes": episodes, "mean_return": mean_return,
+                "eval_episodes": len(returns), "action_repeat": args.action_repeat,
+                "entropy_coef": args.entropy_coef,
             }
             save_checkpoint(out_dir / "latest.pt", model, meta)
             if best_mean is None or mean_return > best_mean:

@@ -4,7 +4,7 @@
 
 本项目按文献 CURL: Contrastive Unsupervised Representations for Reinforcement Learning 从零实现 CURL 表征学习框架，目标为基于对比学习建立状态表征模型，将高维图像转换为低维表征，并作为"即插即用"编码器接入 RL 算法。实现顺序为环境适配 → AC → DQN → SAC → CURL，其中 SAC 与 DQN 的先后以实际推进为准，最终进行对比。项目背景详见 [README.md](README.md)。
 
-环境复现现状：已引入 uv 依赖管理，新增 [pyproject.toml](pyproject.toml) 与 [uv.lock](uv.lock)（清单锁定 33 个包，来源为清华镜像），当前 .venv 未动、仍含 torch 2.14.0+cpu 等 41 个包。约定 torch 不纳入 uv 清单，GPU 主机独立维护 CUDA 版 torch。
+环境复现现状：已引入 uv 依赖管理，新增 [pyproject.toml](pyproject.toml) 与 [uv.lock](uv.lock)（清单锁定 33 个包，来源为清华镜像），当前 .venv 未动、仍含 torch 2.14.0+cpu 等 41 个包。约定 torch 不纳入 uv 清单，GPU 主机独立维护 CUDA 版 torch。GPU 主机即 AI 训练主力机，主 CPU 主机已含 AC/SAC GPU 开关代码但无 CUDA 可自证。
 
 已完成的内容与佐证材料：
 
@@ -18,11 +18,14 @@
 
 暂无。待用户补充下一步任务（如 DQN 或 CURL 阶段）后再行记录。
 
-2026-09 环境复现任务（GPU 主机部署）进行中：用户将在 GPU 主机（Windows + NVIDIA，CUDA 与 PyTorch 已配好）复制本项目，用 uv.lock 快速复原依赖；torch 由用户既有方案独立维护。清单与操作指引已交付，GPU 主机同步结果待用户回执。
+2026-09 环境复现任务（GPU 主机部署）进行中：用户已在 GPU 主机复制本项目并用 uv.lock 复原依赖、跑通冒烟。
+
+GPU 训练开关任务（AC/SAC `--gpu`）进行中：改造已完成并通过本机 CPU 验证（smoke 无回归、`--gpu` 于 CUDA 不可用时 parser.error 退出、eval_demo headless CPU 跑通）。CUDA 实机行为本机无法自证，交付验证命令后待 GPU 主机实机回执；本轮改动尚未 git 提交。
 
 ## 历史任务
 
-- 任务：uv 依赖管理方案。内容：应"在 GPU 主机无损复现 CPU 主机环境"需求，引入 uv 生成 [pyproject.toml](pyproject.toml)（5 个直接依赖按现状 pin，requires-python 3.12）与 [uv.lock](uv.lock)（33 个包，清华镜像），约定 torch 系游离清单外由 GPU 主机独立装 CUDA 版，同步须带 --inexact 防误删。结果：清单与两端操作指引已交付，未动 .venv，未提交 git；GPU 主机执行结果待回执。
+- 任务：GPU 训练开关（AC/SAC --gpu）。内容：为 AC、SAC 的 train.py 与 eval_demo.py 增加 `--gpu` 布尔开关（不传则 cuda 可用时自动启用、显式传却在 CUDA 不可用时 parser.error），device 解析后模型、log_alpha(仅 SAC)、批量张量统一搬运，观测自建张量均以模型参数所在 device 推断并 `.to/`、返回 numpy 前 `.cpu()`；meta 与 cfg 日志记录 device。结果：本机 CPU 全路径验证通过、无明显回归，CUDA 实机验证待 GPU 主机回执；尚未 git 提交。
+- 任务：uv 依赖管理方案。内容：应"在 GPU 主机无损复现 CPU 主机环境"需求，引入 uv 生成 [pyproject.toml](pyproject.toml)（5 个直接依赖按现状 pin，requires-python 3.12）与 [uv.lock](uv.lock)（33 个包，清华镜像），约定 torch 系游离清单外由 GPU 主机独立装 CUDA 版，同步须带 --inexact 防误删。结果：清单与两端操作指引已交付，未动 .venv，未提交 git；GPU 主机执行已通过。
 - 任务：RL 环境冒烟验证。内容：验证 Gymnasium、DMControl、ALE 三个框架的接入与渲染链路。结果：通过，产出 [smoke_environments.py](src/smoke_environments.py)。提交 b019f41，时间为 2026-09-06。
 - 任务：AC 算法实现。内容：按需求文档实现 on-policy AC 基线（actor 与 V 头共享卷积编码器，tanh-squashed Gaussian，块折扣 TD(0) 更新），交付 src/ac/ 五个文件与短跑自检。结果：短跑自检确定性通过，完整 100K 步训练留给用户本地执行。提交 f6ed057，时间为 2026-09-06。
 - 任务：SAC 算法实现。内容：在 AC 基础上实现 SAC，保持训练、测试与存档设计，代码置于 src/sac/。结果：已完成，尚未 git 提交。

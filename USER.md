@@ -21,19 +21,12 @@
 
 - 维护约定：每次任务结束后更新 MEMO.md；每轮提问后更新 USER.md。
 - 记忆文件板块：项目现状、当前任务、历史任务介绍、笔记、其他重要信息。
+- USER.md 只记录长期稳定的用户档案：认知水平、习惯偏好、规范约定、以往教训、决策风格；不得添加"本轮任务"之类的临时板块，任务决策、进展与主机事实按要求写入 MEMO.md。
 
 ## 以往教训
 
-- 无已记录的教训。
+- 曾向 USER.md 添加"本轮任务相关约定"临时板块，违反 AGENTS.md 的板块规范，被用户要求改正。应向 USER 只记长期用户档案，任务性内容一律归 MEMO。
 
 ## 决策风格
 
 - 决策快速明确，偏好提供选项后直接选择；涉及项目推进顺序与内容范围时由用户拍板。
-
-## 本轮任务相关约定（2026-09 环境复现方案讨论）
-
-- GPU 主机：Windows + NVIDIA 显卡；CUDA 已安装，PyTorch（CUDA 构建）已配置并能运行。
-- 项目代码与 data 的搬运由用户自行解决，不在本任务范围。
-- 本次只产出 uv 依赖清单文件（pyproject.toml、uv.lock）与操作指引，不动当前主机 .venv。
-- 当前主机事实：已装 uv 0.12.9；项目无任何依赖清单文件；.venv 解释器 Python 3.12.14（无 pip，疑似 uv 创建）；共 41 个第三方包，torch==2.14.0+cpu（CPU 构建）、torchvision==0.29.0、gymnasium==1.3.0、dm_control==1.0.45、mujoco==3.12.0、ale-py==0.12.1、numpy==2.5.2、scipy==1.18.1、pygame==2.6.1 等；torch 的 dist-info 无 direct_url.json，来源待确认。
-- src 代码实际 import 的第三方顶层包：torch、gymnasium、dm_control、ale_py、numpy、pygame（其余为标准库或本地模块）。

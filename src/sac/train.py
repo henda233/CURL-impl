@@ -65,7 +65,8 @@ def random_action():
 
 def select_action(actor, state_u8, sample):
     """state (9,84,84) uint8 → action (6,) float64；sample 采样 tanh(μ+σε) 否则取 tanh(μ)。"""
-    obs = obs_to_tensor(state_u8).unsqueeze(0)
+    device = next(actor.parameters()).device
+    obs = obs_to_tensor(state_u8).unsqueeze(0).to(device)
     with torch.no_grad():
         mu, log_std = actor(obs)
         if sample:
@@ -73,7 +74,7 @@ def select_action(actor, state_u8, sample):
         else:
             u = mu
         action = torch.tanh(u)
-    return action[0].numpy().astype(np.float64)
+    return action[0].cpu().numpy().astype(np.float64)
 
 
 def train_step(actor, critic, target, log_alpha, opt_actor, opt_critic, opt_alpha,
@@ -146,6 +147,7 @@ def main():
     parser.add_argument("--initial-steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--replay-size", type=int, default=100_000)
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（不传则 cuda 可用时自动启用）")
     parser.add_argument("--smoke", action="store_true", help="短跑自检参数覆盖")
     args = parser.parse_args()
     if args.smoke:
@@ -156,15 +158,19 @@ def main():
         args.eval_interval = 120
         args.eval_episodes = 1
 
+    if args.gpu and not torch.cuda.is_available():
+        parser.error("--gpu requested but CUDA is not available")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     env = make_env(args.seed)
-    actor = Actor(ACT_DIM)
-    critic = Critic(ACT_DIM)
+    actor = Actor(ACT_DIM).to(device)
+    critic = Critic(ACT_DIM).to(device)
     target = copy.deepcopy(critic)
     opt_actor = torch.optim.Adam(actor.parameters(), lr=args.lr)
     opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr)
-    log_alpha = torch.tensor([math.log(args.init_temperature)], requires_grad=True)
+    log_alpha = torch.tensor([math.log(args.init_temperature)], requires_grad=True).to(device)
     opt_alpha = torch.optim.Adam([log_alpha], lr=args.alpha_lr, betas=(0.5, 0.999))
     buffer = ReplayBuffer(args.replay_size, ACT_DIM)
     target_entropy = -ACT_DIM
@@ -174,10 +180,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("[sac-train] out=%s" % out_dir)
-    print("[sac-train] cfg seed=%d max_env_steps=%d action_repeat=%d lr=%g alpha_lr=%g "
+    print("[sac-train] cfg device=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g alpha_lr=%g "
           "gamma=%g tau=%g init_temperature=%g initial_steps=%d batch_size=%d "
           "replay_size=%d eval_interval=%d eval_episodes=%d" % (
-              args.seed, args.max_env_steps, args.action_repeat, args.lr, args.alpha_lr,
+              device, args.seed, args.max_env_steps, args.action_repeat, args.lr, args.alpha_lr,
               args.gamma, args.tau, args.init_temperature, args.initial_steps,
               args.batch_size, args.replay_size, args.eval_interval, args.eval_episodes))
 
@@ -218,8 +224,9 @@ def main():
                 obs, act, rew, next_obs, done = buffer.sample(args.batch_size)
                 ql, pl, al, temp = train_step(
                     actor, critic, target, log_alpha, opt_actor, opt_critic, opt_alpha,
-                    obs_to_tensor(obs), torch.from_numpy(act), torch.from_numpy(rew),
-                    obs_to_tensor(next_obs), torch.from_numpy(done),
+                    obs_to_tensor(obs).to(device), torch.from_numpy(act).to(device),
+                    torch.from_numpy(rew).to(device), obs_to_tensor(next_obs).to(device),
+                    torch.from_numpy(done).to(device),
                     args.gamma, args.tau, target_entropy)
                 qsum += ql
                 psum += pl
@@ -242,9 +249,10 @@ def main():
             returns = evaluate(actor, args.action_repeat, args.eval_episodes, args.seed)
             mean_return = float(np.mean(returns))
             meta = {
-                "seed": args.seed, "env_steps": env_steps, "episodes": episodes,
-                "mean_return": mean_return, "eval_episodes": len(returns),
-                "action_repeat": args.action_repeat, "temperature": tsum / nloss if nloss else float(log_alpha.detach().exp()),
+                "seed": args.seed, "device": device, "env_steps": env_steps,
+                "episodes": episodes, "mean_return": mean_return,
+                "eval_episodes": len(returns), "action_repeat": args.action_repeat,
+                "temperature": tsum / nloss if nloss else float(log_alpha.detach().exp()),
                 "lr": args.lr, "alpha_lr": args.alpha_lr, "gamma": args.gamma,
                 "tau": args.tau, "batch_size": args.batch_size,
                 "initial_steps": args.initial_steps,
