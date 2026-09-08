@@ -16,6 +16,7 @@
 - `--gpu` 语义改为显式（src/{ac,sac}/{train,eval_demo}.py 四文件）：`device = cuda iff args.gpu`，不指定恒 CPU，显式传但 CUDA 不可用仍 parser.error；mock CUDA 可用时 smoke 仍 device=cpu 已自证。实机验证：不带 `--gpu` cfg 应 device=cpu、带 `--gpu` 应 device=cuda。
 - 旧收尾项：GPU 实机对 uint8 直传优化（见历史任务末条）复验并回执后做最终闭环。
 - 训练日志记录：ac/sac 训练新增控制台全量输出落盘 data/<算法>-<时间戳>[-smoke]/train_log.txt——新增 src/{ac,sac}/log_tee.py 同构模块、train.py 各两处接入（mkdir 后 start、DONE 后 stop），tee 双写 stdout/stderr、原样照录、追加写入、逐条 flush、中断不丢；smoke 与终端逐字一致已自证，平台无关不需 GPU 实机。需求 [训练日志记录.md](docs/functions/训练日志记录.md)，技术 [训练日志记录技术文档.md](docs/techs/训练日志记录技术文档.md)、复盘 [训练日志记录开发复盘.md](docs/notes/训练日志记录开发复盘.md)；git 提交后本条移入历史任务。
+- SAC update 段瓶颈诊断工具（新增 src/sac/diag_update.py，未提交）：GPU 实机 --gpu 跑多次 update，逐次墙钟统计之外由 torch.profiler 抓一次稳定段，输出 CUDA device 时间及其占区间墙钟比例，用于判别单次 update 87ms 属结构性算量还是同步/搬运等待；不改 train.py 常备路径，--cpu-smoke 本机通路已自证，实机回执后做性能瓶颈分析闭环。需求 [性能瓶颈分析.md](docs/functions/性能瓶颈分析.md)，GPU 服务器信息见 [GPU服务器信息.md](docs/reports/GPU服务器信息.md)。
 
 ## 历史任务（复盘与技术文档见各 docs 文件）
 
