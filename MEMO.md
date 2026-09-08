@@ -12,11 +12,11 @@
 
 2026-09 以下改动均未 git 提交：前三批经本机自证、待 GPU 服务器实机回执后闭环；末项训练日志记录平台无关、已本机自证，git 提交后即闭环：
 - 无头默认 EGL（src/{ac,sac}/train.py）：linux 无 DISPLAY 且未设 MUJOCO_GL 时于 dm_control import 前补 `MUJOCO_GL=egl`；实机验证为不带任何 export 直跑不再报 GLFW/DISPLAY 错误。
-- SAC `--profile`（新增 src/sac/profiler.py，train.py 插桩）：分段计时 policy/phys/render/obs/sample/update 与 reset，warmup/train 两阶段统计，覆盖 max_env_steps=2000、跳过 eval、写 profile.json；CPU 端与 GPU 端 2K 同口径（batch 512）剖析由用户自跑，回执后做收集侧/更新侧瓶颈分析。
+- SAC `--profile`（新增 src/sac/profiler.py，train.py 插桩）：分段计时 policy/phys/render/obs/sample/update 与 reset，warmup/train 两阶段统计，覆盖 max_env_steps=2000、跳过 eval、写 profile.json。GPU 2K 回执（update=87ms 占 wall 93%）加诊断复现（mean=94ms/p50=88.6ms）确证瓶颈在更新侧，收集侧不是问题；归因：单步约 7.6e11 FLOPs 的 Linear(39200,1024) 大全连接层加 GPU 非独占（诊断逐次墙钟双峰 65–90/105–148ms，快照 97% util 佐证）。"代码无性能问题"系推断：未做独占对照，90ms 与卡型算力模型预期（10–20ms）的 2–4 倍 gap 未归因。原始数据 [性能瓶颈分析.md](docs/functions/性能瓶颈分析.md)、[GPU服务器信息.md](docs/reports/GPU服务器信息.md)。
 - `--gpu` 语义改为显式（src/{ac,sac}/{train,eval_demo}.py 四文件）：`device = cuda iff args.gpu`，不指定恒 CPU，显式传但 CUDA 不可用仍 parser.error；mock CUDA 可用时 smoke 仍 device=cpu 已自证。实机验证：不带 `--gpu` cfg 应 device=cpu、带 `--gpu` 应 device=cuda。
 - 旧收尾项：GPU 实机对 uint8 直传优化（见历史任务末条）复验并回执后做最终闭环。
 - 训练日志记录：ac/sac 训练新增控制台全量输出落盘 data/<算法>-<时间戳>[-smoke]/train_log.txt——新增 src/{ac,sac}/log_tee.py 同构模块、train.py 各两处接入（mkdir 后 start、DONE 后 stop），tee 双写 stdout/stderr、原样照录、追加写入、逐条 flush、中断不丢；smoke 与终端逐字一致已自证，平台无关不需 GPU 实机。需求 [训练日志记录.md](docs/functions/训练日志记录.md)，技术 [训练日志记录技术文档.md](docs/techs/训练日志记录技术文档.md)、复盘 [训练日志记录开发复盘.md](docs/notes/训练日志记录开发复盘.md)；git 提交后本条移入历史任务。
-- SAC update 段瓶颈诊断工具（新增 src/sac/diag_update.py，未提交）：GPU 实机 --gpu 跑多次 update，逐次墙钟统计之外由 torch.profiler 抓一次稳定段，输出 CUDA device 时间及其占区间墙钟比例，用于判别单次 update 87ms 属结构性算量还是同步/搬运等待；不改 train.py 常备路径，--cpu-smoke 本机通路已自证，实机回执后做性能瓶颈分析闭环。需求 [性能瓶颈分析.md](docs/functions/性能瓶颈分析.md)，GPU 服务器信息见 [GPU服务器信息.md](docs/reports/GPU服务器信息.md)。
+- SAC update 段瓶颈诊断工具（新增 src/sac/diag_update.py，未提交，保留为回归诊断）：GPU 实机 --gpu 复现 update mean=94ms/p50=88.6ms，逐次墙钟与分位统计可信；但 `sum(self_device_time_total)` 得出的 device_ratio 证实无效（225% 超区间墙钟，CUDA 统计重复/重叠计数），该行不可采信、缺陷未修；--cpu-smoke 本机通路已自证。需求 [性能瓶颈分析.md](docs/functions/性能瓶颈分析.md)，GPU 服务器信息见 [GPU服务器信息.md](docs/reports/GPU服务器信息.md)。
 
 ## 历史任务（复盘与技术文档见各 docs 文件）
 
@@ -35,6 +35,7 @@
 - 模块命名避开标准库：profile.py 遮蔽 stdlib profile 致 cProfile/torch 导入失败，已改名 profiler.py；新模块名需核对无 stdlib 同名。
 - 程序内 tee 全量日志要点（2026-09 训练日志记录）：委托 isatty/fileno/encoding 等流属性、flush 转发原流、文件句柄模块级持有防提前回收、逐行 flush 使 Ctrl+C 与异常 traceback 不丢；管道重定向下终端跨流乱序不影响文件按 write 调用序记录。
 - 本机 Windows（torch CPU 版）跑同口径 batch 512 训练过慢：SAC 2K profile 运行超 15 分钟未完成已终止，此类全量剖析交给 GPU 服务器或用户执行。
+- torch.profiler（cu132 + Blackwell）下 key_averages() 的 self_device_time_total 直接求和的 device 累计时间会重复/重叠计数，实测超区间墙钟（225%）而失效；判别 GPU 忙闲宜改用变量对照实验或逐算子表人工核对。
 
 ## 其他重要信息
 

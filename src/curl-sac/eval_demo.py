@@ -1,0 +1,80 @@
+"""载入 data/curl-sac-*/ checkpoint，渲染演示智能体走一遍 walker-walk。
+
+默认载 best.pt（--latest 载最新）；--headless 不弹窗、只打印统计（供自检/CI）。
+checkpoint 的 model 字段为 {encoder: f_q, actor: actor_head}，演示用 center crop 观测。
+"""
+
+import argparse
+from pathlib import Path
+
+import torch
+from dm_control import suite
+
+from networks import ActorHead, Encoder, ACT_DIM
+from pipeline import FrameStack, center_crop
+from train import render_frame, run_block, select_action
+from viewer import PyGameViewer
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="CURL 训练结果渲染演示")
+    parser.add_argument("--dir", type=str, required=True, help="data/curl-sac-<时间戳> 目录")
+    parser.add_argument("--latest", action="store_true", help="载 latest.pt 而非 best.pt")
+    parser.add_argument("--headless", action="store_true", help="不弹窗只打印")
+    parser.add_argument("--action-repeat", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 推理（需显式指定，否则用 CPU）")
+    args = parser.parse_args()
+
+    if args.gpu and not torch.cuda.is_available():
+        parser.error("--gpu requested but CUDA is not available")
+    device = "cuda" if args.gpu else "cpu"
+
+    ckpt_path = Path(args.dir) / ("latest.pt" if args.latest else "best.pt")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    encoder = Encoder().to(device)
+    actor = ActorHead(ACT_DIM).to(device)
+    encoder.load_state_dict(ckpt["model"]["encoder"])
+    actor.load_state_dict(ckpt["model"]["actor"])
+    print("[curl-sac-demo] loaded device=%s %s meta=%s" % (device, ckpt_path, ckpt["meta"]))
+
+    env = suite.load("walker", "walk", task_kwargs={"random": args.seed})
+    stack = FrameStack()
+    viewer = (
+        None
+        if args.headless
+        else PyGameViewer((100, 100), "curl-sac walker/walk %s" % args.dir)
+    )
+
+    try:
+        ts = env.reset()
+        stack.reset(render_frame(env))
+        if viewer:
+            viewer.show(render_frame(env))
+        ep_return = 0.0
+        env_steps = 0
+        blocks = 0
+        while not ts.last():
+            action = select_action(encoder, actor, stack.state(), sample=False,
+                                   crop=center_crop)
+            reward_sum, done, used = run_block(env, action, args.action_repeat)
+            ep_return += reward_sum
+            env_steps += used
+            blocks += 1
+            if done:
+                break
+            frame = render_frame(env)
+            stack.push(frame)
+            if viewer:
+                viewer.show(frame)
+        print("[curl-sac-demo] DONE env_steps=%d blocks=%d return=%.3f" % (
+            env_steps, blocks, ep_return))
+    finally:
+        if viewer:
+            viewer.close()
+
+
+if __name__ == "__main__":
+    main()
