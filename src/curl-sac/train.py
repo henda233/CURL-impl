@@ -94,10 +94,12 @@ def select_action(encoder, actor, state_u8, sample, crop):
 
 def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bilinear,
                actor, log_alpha, opt_main, opt_actor, opt_alpha,
-               obs_a, obs_k, next_a, act, rew, done, gamma, tau, target_entropy):
+               obs_a, obs_k, next_a, act, rew, done, gamma, tau, target_entropy,
+               diag=None):
     """一次更新循环：联合步（Bellman+InfoNCE）→ target EMA → f_k EMA → actor → 温度。
 
-    返回 (q_loss, curl_loss, pi_loss, alpha_loss, temperature)。
+    返回 (q_loss, curl_loss, pi_loss, alpha_loss, temperature)。diag 非 None 时把
+    TD/actor/表征/InfoNCE 各量写入该 dict（旁路收集，不改变数值语义），供 --diag 落盘。
     """
     alpha = log_alpha.exp().detach()
     z_a = encoder(obs_a)
@@ -123,7 +125,8 @@ def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bili
     soft_update(key_encoder, encoder, KEY_TAU)
 
     z_a = z_a.detach()
-    a, logp = reparam_sample(*actor(z_a))
+    mu, log_std = actor(z_a)
+    a, logp = reparam_sample(mu, log_std)
     q1a, q2a = critic(z_a, a)
     pi_loss = (alpha * logp - torch.min(q1a, q2a)).mean()
     opt_actor.zero_grad()
@@ -135,6 +138,27 @@ def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bili
     alpha_loss.backward()
     opt_alpha.step()
     temp = float(log_alpha.detach().exp())
+    if diag is not None:
+        qm = torch.min(q1, q2)
+        qt = torch.min(qt1, qt2)
+        with torch.no_grad():
+            diag["y_mean"] = float(y.mean())
+            diag["y_absmax"] = float(y.abs().max())
+            diag["qmin_mean"] = float(qm.mean())
+            diag["qmin_absmax"] = float(qm.abs().max())
+            diag["tqmin_mean"] = float(qt.mean())
+            diag["tqmin_absmax"] = float(qt.abs().max())
+            diag["logp2_mean"] = float(logp2.mean())
+            diag["logp2_min"] = float(logp2.min())
+            diag["logp_mean"] = float(logp.mean())
+            diag["logp_min"] = float(logp.min())
+            diag["mu_absmax"] = float(mu.abs().max())
+            diag["logstd_absmax"] = float(log_std.abs().max())
+            diag["z_absmax"] = float(z_a.abs().max())
+            diag["z_std_mean"] = float(z_a.std(dim=0).mean())
+            diag["logits_absmax"] = float(logits.abs().max())
+            diag["logits_spread"] = float(
+                (logits.max(dim=1).values - logits.min(dim=1).values).mean())
     return (float(q_loss.detach()), float(curl_loss.detach()),
             float(pi_loss.detach()), float(alpha_loss.detach()), temp)
 
@@ -166,6 +190,15 @@ def save_checkpoint(path, encoder, actor, meta):
                 "meta": meta}, path)
 
 
+def flush_diag(path, rows):
+    if not rows:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    rows.clear()
+
+
 def main():
     parser = argparse.ArgumentParser(description="CURL train (walker-walk pixels)")
     parser.add_argument("--seed", type=int, default=0)
@@ -185,6 +218,8 @@ def main():
     parser.add_argument("--smoke", action="store_true", help="短跑自检参数覆盖")
     parser.add_argument("--profile", action="store_true",
                         help="分段计时剖析：覆盖 max_env_steps=2000、跳过 eval、写 profile.json")
+    parser.add_argument("--diag", action="store_true",
+                        help="每更新步旁路记录 TD/actor/表征/InfoNCE 数值，写 update_diag.jsonl")
     args = parser.parse_args()
     if args.smoke:
         args.max_env_steps = 60
@@ -228,16 +263,19 @@ def main():
     log_tee.start(out_dir / "train_log.txt")
 
     print("[curl-sac-train] out=%s" % out_dir)
-    print("[curl-sac-train] cfg device=%s profile=%s seed=%d max_env_steps=%d action_repeat=%d "
+    print("[curl-sac-train] cfg device=%s profile=%s diag=%s seed=%d max_env_steps=%d action_repeat=%d "
           "lr=%g alpha_lr=%g gamma=%g tau=%g key_tau=%g init_temperature=%g "
           "initial_steps=%d batch_size=%d replay_size=%d eval_interval=%d "
           "eval_episodes=%d" % (
-              device, args.profile, args.seed, args.max_env_steps, args.action_repeat,
-              args.lr, args.alpha_lr, args.gamma, args.tau, KEY_TAU,
-              args.init_temperature, args.initial_steps, args.batch_size,
+              device, args.profile, args.diag, args.seed, args.max_env_steps,
+              args.action_repeat, args.lr, args.alpha_lr, args.gamma, args.tau,
+              KEY_TAU, args.init_temperature, args.initial_steps, args.batch_size,
               args.replay_size, args.eval_interval, args.eval_episodes))
 
     history = []
+    diag_rows = []
+    n_diag = 0
+    diag_path = out_dir / "update_diag.jsonl"
     best_mean = None
     episodes = 0
     env_steps = 0
@@ -294,16 +332,25 @@ def main():
                 if args.profile and device == "cuda":
                     torch.cuda.synchronize()
                 profile.start("update")
+                diag = {} if args.diag else None
                 ql, cl, pl, al, temp = train_step(
                     encoder, critic, target_encoder, target_critic, key_encoder,
                     bilinear, actor, log_alpha, opt_main, opt_actor, opt_alpha,
                     obs_to_tensor(obs_a, device), obs_to_tensor(obs_k, device),
                     obs_to_tensor(next_a, device), torch.from_numpy(act).to(device),
                     torch.from_numpy(rew).to(device), torch.from_numpy(done).to(device),
-                    args.gamma, args.tau, target_entropy)
+                    args.gamma, args.tau, target_entropy, diag=diag)
                 if args.profile and device == "cuda":
                     torch.cuda.synchronize()
                 profile.stop("update")
+                if args.diag:
+                    row = {"step": n_diag, "env_steps": env_steps}
+                    row.update(diag)
+                    row.update(q=ql, curl=cl, pi=pl, alpha_loss=al, temp=temp)
+                    diag_rows.append(row)
+                    n_diag += 1
+                    if n_diag % 500 == 0:
+                        flush_diag(diag_path, diag_rows)
                 qsum += ql
                 csum += cl
                 psum += pl
@@ -347,6 +394,9 @@ def main():
                   "saved=%s" % (env_steps, mean_return, best_mean, out_dir))
             next_eval = min(env_steps + args.eval_interval, args.max_env_steps)
     env.close()
+    if args.diag:
+        flush_diag(diag_path, diag_rows)
+        print("[curl-sac-train] DIAG rows=%d saved=%s" % (n_diag, diag_path))
     wall = time.perf_counter() - wall0
     if args.profile:
         for line in profile.report_lines(env_steps, episodes, wall):
