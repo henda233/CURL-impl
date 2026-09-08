@@ -24,12 +24,12 @@ def main():
     parser.add_argument("--headless", action="store_true", help="不弹窗只打印")
     parser.add_argument("--action-repeat", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 推理（不传则 cuda 可用时自动启用）")
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 推理（需显式指定，否则用 CPU）")
     args = parser.parse_args()
 
     if args.gpu and not torch.cuda.is_available():
         parser.error("--gpu requested but CUDA is not available")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if args.gpu else "cpu"
 
     ckpt_path = Path(args.dir) / ("latest.pt" if args.latest else "best.pt")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)

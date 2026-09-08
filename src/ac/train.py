@@ -13,11 +13,18 @@ walker 的 action repeat=2、lr 1e-3、γ .99、eval 10 episodes）。
 
 import argparse
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
+
+if (sys.platform.startswith("linux") and "DISPLAY" not in os.environ
+        and "MUJOCO_GL" not in os.environ):
+    os.environ["MUJOCO_GL"] = "egl"
+
 from dm_control import suite
 
 import networks
@@ -135,7 +142,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--entropy-coef", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（不传则 cuda 可用时自动启用）")
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（需显式指定，否则用 CPU）")
     parser.add_argument("--smoke", action="store_true", help="短跑自检参数覆盖")
     args = parser.parse_args()
     if args.smoke:
@@ -145,7 +152,7 @@ def main():
 
     if args.gpu and not torch.cuda.is_available():
         parser.error("--gpu requested but CUDA is not available")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if args.gpu else "cpu"
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

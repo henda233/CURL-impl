@@ -21,17 +21,25 @@ import argparse
 import copy
 import json
 import math
+import os
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
+
+if (sys.platform.startswith("linux") and "DISPLAY" not in os.environ
+        and "MUJOCO_GL" not in os.environ):
+    os.environ["MUJOCO_GL"] = "egl"
+
 from dm_control import suite
 
 from networks import Actor, Critic, reparam_sample, soft_update
 from pipeline import FrameStack, center_crop, obs_to_tensor
 from buffer import ReplayBuffer
+from profiler import Profile
 
 ACT_DIM = 6
 RENDER_H = RENDER_W = 100
@@ -159,8 +167,10 @@ def main():
     parser.add_argument("--initial-steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--replay-size", type=int, default=100_000)
-    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（不传则 cuda 可用时自动启用）")
+    parser.add_argument("--gpu", action="store_true", help="使用 CUDA 训练（需显式指定，否则用 CPU）")
     parser.add_argument("--smoke", action="store_true", help="短跑自检参数覆盖")
+    parser.add_argument("--profile", action="store_true",
+                        help="分段计时剖析：覆盖 max_env_steps=2000、跳过 eval、写 profile.json")
     args = parser.parse_args()
     if args.smoke:
         args.max_env_steps = 120
@@ -169,10 +179,12 @@ def main():
         args.batch_size = 16
         args.eval_interval = 120
         args.eval_episodes = 1
+    if args.profile and not args.smoke:
+        args.max_env_steps = 2000
 
     if args.gpu and not torch.cuda.is_available():
         parser.error("--gpu requested but CUDA is not available")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if args.gpu else "cpu"
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -194,54 +206,76 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("[sac-train] out=%s" % out_dir)
-    print("[sac-train] cfg device=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g alpha_lr=%g "
+    print("[sac-train] cfg device=%s profile=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g alpha_lr=%g "
           "gamma=%g tau=%g init_temperature=%g initial_steps=%d batch_size=%d "
           "replay_size=%d eval_interval=%d eval_episodes=%d" % (
-              device, args.seed, args.max_env_steps, args.action_repeat, args.lr, args.alpha_lr,
-              args.gamma, args.tau, args.init_temperature, args.initial_steps,
-              args.batch_size, args.replay_size, args.eval_interval, args.eval_episodes))
+              device, args.profile, args.seed, args.max_env_steps, args.action_repeat,
+              args.lr, args.alpha_lr, args.gamma, args.tau, args.init_temperature,
+              args.initial_steps, args.batch_size, args.replay_size,
+              args.eval_interval, args.eval_episodes))
 
     history = []
     best_mean = None
     episodes = 0
     env_steps = 0
     next_eval = min(args.eval_interval, args.max_env_steps)
+    profile = Profile(args.profile)
+    wall0 = time.perf_counter()
 
     while env_steps < args.max_env_steps:
         budget = (args.max_env_steps - env_steps) // args.action_repeat
         if budget <= 0:
             break
+        r0 = time.perf_counter()
         ts = env.reset()
         stack = FrameStack()
         stack.reset(render_frame(env))
+        profile.record_reset(time.perf_counter() - r0)
         ep_return = 0.0
         ep_env = 0
         nblocks = 0
         qsum = psum = asum = tsum = nloss = 0
         while not ts.last() and nblocks < budget:
+            profile.set_stage("warmup" if env_steps < args.initial_steps else "train")
+            profile.start("policy")
             state = stack.state()
             if env_steps < args.initial_steps:
                 action = random_action()
             else:
                 action = select_action(actor, state, sample=True)
+            profile.stop("policy")
+            profile.start("phys")
             reward_sum, last, used = run_block(env, action, args.action_repeat)
+            profile.stop("phys")
+            profile.start("render")
             frame = render_frame(env)
+            profile.stop("render")
+            profile.start("obs")
             stack.push(frame)
             buffer.add(state, action.astype(np.float32), reward_sum,
                        center_crop(frame).transpose(2, 0, 1), done=False)
+            profile.stop("obs")
             env_steps += used
             ep_return += reward_sum
             ep_env += used
             nblocks += 1
 
             if env_steps >= args.initial_steps and len(buffer) >= args.batch_size:
+                profile.start("sample")
                 obs, act, rew, next_obs, done = buffer.sample(args.batch_size)
+                profile.stop("sample")
+                if args.profile and device == "cuda":
+                    torch.cuda.synchronize()
+                profile.start("update")
                 ql, pl, al, temp = train_step(
                     actor, critic, target, log_alpha, opt_actor, opt_critic, opt_alpha,
                     obs_to_tensor(obs, device), torch.from_numpy(act).to(device),
                     torch.from_numpy(rew).to(device), obs_to_tensor(next_obs, device),
                     torch.from_numpy(done).to(device),
                     args.gamma, args.tau, target_entropy)
+                if args.profile and device == "cuda":
+                    torch.cuda.synchronize()
+                profile.stop("update")
                 qsum += ql
                 psum += pl
                 asum += al
@@ -259,7 +293,7 @@ def main():
             print("[sac-train] ep=%d env_steps=%d ep_return=%.3f ep_env=%d (warmup)" % (
                 episodes, env_steps, ep_return, ep_env))
 
-        if env_steps >= args.initial_steps and env_steps >= next_eval:
+        if env_steps >= args.initial_steps and env_steps >= next_eval and not args.profile:
             returns = evaluate(actor, args.action_repeat, args.eval_episodes, args.seed)
             mean_return = float(np.mean(returns))
             meta = {
@@ -282,6 +316,13 @@ def main():
                   "saved=%s" % (env_steps, mean_return, best_mean, out_dir))
             next_eval = min(env_steps + args.eval_interval, args.max_env_steps)
     env.close()
+    wall = time.perf_counter() - wall0
+    if args.profile:
+        for line in profile.report_lines(env_steps, episodes, wall):
+            print("[sac-train] %s" % line)
+        with open(out_dir / "profile.json", "w", encoding="utf-8") as f:
+            json.dump(profile.to_dict(env_steps, episodes, wall), f, indent=2)
+        print("[sac-train] PROFILE saved=%s" % (out_dir / "profile.json"))
 
     print("[sac-train] DONE env_steps=%d episodes=%d best_mean=%.3f out=%s" % (
         env_steps, episodes, best_mean if best_mean is not None else float("nan"),
