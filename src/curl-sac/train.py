@@ -92,19 +92,14 @@ def select_action(encoder, actor, state_u8, sample, crop):
     return action[0].cpu().numpy().astype(np.float64)
 
 
-def _opt_params(opt):
-    return [p for g in opt.param_groups for p in g["params"]]
-
-
 def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bilinear,
                actor, log_alpha, opt_main, opt_actor, opt_alpha,
                obs_a, obs_k, next_a, act, rew, done, gamma, tau, target_entropy,
-               diag=None, grad_clip=None):
+               diag=None):
     """一次更新循环：联合步（Bellman+InfoNCE）→ target EMA → f_k EMA → actor → 温度。
 
     返回 (q_loss, curl_loss, pi_loss, alpha_loss, temperature)。diag 非 None 时把
     TD/actor/表征/InfoNCE 各量写入该 dict（旁路收集，不改变数值语义），供 --diag 落盘。
-    grad_clip 非 None 时对联合步与 actor 步做梯度总范数裁剪（--grad-clip 阈值）。
     """
     alpha = log_alpha.exp().detach()
     z_a = encoder(obs_a)
@@ -124,8 +119,6 @@ def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bili
     curl_loss = F.cross_entropy(logits, labels)
     opt_main.zero_grad()
     (q_loss + curl_loss).backward()
-    norm_main = (torch.nn.utils.clip_grad_norm_(_opt_params(opt_main), grad_clip)
-                 if grad_clip is not None else None)
     opt_main.step()
     soft_update(target_encoder, encoder, tau)
     soft_update(target_critic, critic, tau)
@@ -138,8 +131,6 @@ def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bili
     pi_loss = (alpha * logp - torch.min(q1a, q2a)).mean()
     opt_actor.zero_grad()
     pi_loss.backward()
-    norm_actor = (torch.nn.utils.clip_grad_norm_(_opt_params(opt_actor), grad_clip)
-                  if grad_clip is not None else None)
     opt_actor.step()
 
     alpha_loss = -(log_alpha * (logp.detach() + target_entropy)).mean()
@@ -148,11 +139,6 @@ def train_step(encoder, critic, target_encoder, target_critic, key_encoder, bili
     opt_alpha.step()
     temp = float(log_alpha.detach().exp())
     if diag is not None:
-        if grad_clip is not None:
-            diag["grad_norm_main"] = float(norm_main)
-            diag["clip_main"] = bool(norm_main > grad_clip)
-            diag["grad_norm_actor"] = float(norm_actor)
-            diag["clip_actor"] = bool(norm_actor > grad_clip)
         qm = torch.min(q1, q2)
         qt = torch.min(qt1, qt2)
         with torch.no_grad():
@@ -234,8 +220,6 @@ def main():
                         help="分段计时剖析：覆盖 max_env_steps=2000、跳过 eval、写 profile.json")
     parser.add_argument("--diag", action="store_true",
                         help="每更新步旁路记录 TD/actor/表征/InfoNCE 数值，写 update_diag.jsonl")
-    parser.add_argument("--grad-clip", type=float, default=None, metavar="NORM",
-                        help="联合步与 actor 步梯度总范数裁剪阈值（不传则不裁剪）")
     args = parser.parse_args()
     if args.smoke:
         args.max_env_steps = 60
@@ -279,11 +263,11 @@ def main():
     log_tee.start(out_dir / "train_log.txt")
 
     print("[curl-sac-train] out=%s" % out_dir)
-    print("[curl-sac-train] cfg device=%s profile=%s diag=%s grad_clip=%s seed=%d max_env_steps=%d action_repeat=%d "
+    print("[curl-sac-train] cfg device=%s profile=%s diag=%s seed=%d max_env_steps=%d action_repeat=%d "
           "lr=%g alpha_lr=%g gamma=%g tau=%g key_tau=%g init_temperature=%g "
           "initial_steps=%d batch_size=%d replay_size=%d eval_interval=%d "
           "eval_episodes=%d" % (
-              device, args.profile, args.diag, args.grad_clip, args.seed,
+              device, args.profile, args.diag, args.seed,
               args.max_env_steps, args.action_repeat, args.lr, args.alpha_lr,
               args.gamma, args.tau, KEY_TAU, args.init_temperature,
               args.initial_steps, args.batch_size, args.replay_size,
@@ -356,8 +340,7 @@ def main():
                     obs_to_tensor(obs_a, device), obs_to_tensor(obs_k, device),
                     obs_to_tensor(next_a, device), torch.from_numpy(act).to(device),
                     torch.from_numpy(rew).to(device), torch.from_numpy(done).to(device),
-                    args.gamma, args.tau, target_entropy, diag=diag,
-                    grad_clip=args.grad_clip)
+                    args.gamma, args.tau, target_entropy, diag=diag)
                 if args.profile and device == "cuda":
                     torch.cuda.synchronize()
                 profile.stop("update")

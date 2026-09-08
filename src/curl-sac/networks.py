@@ -110,20 +110,18 @@ class _Temperature(nn.Module):
         return self.log_alpha
 
 
-def tanh_normal_log_prob(mu, log_std, action):
-    """tanh-squashed Gaussian 的 log π(a|s)；action ∈ (-1,1) 开区间。"""
-    a = action.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-    u = torch.atanh(a)
-    std = torch.exp(log_std)
-    logp = -0.5 * ((u - mu) / std) ** 2 - log_std - 0.5 * math.log(2 * math.pi)
-    return (logp - torch.log1p(-a * a)).sum(-1)
-
-
 def reparam_sample(mu, log_std):
-    """重参数采样：u = μ + σ·ε，a = tanh(u)，返回 (a, log π(a|s))，梯度可回传。"""
-    u = mu + torch.exp(log_std) * torch.randn_like(mu)
-    action = torch.tanh(u)
-    return action, tanh_normal_log_prob(mu, log_std, action)
+    """重参数采样：u = μ + σ·ε，a = tanh(u)，返回 (a, log π(a|s))，梯度可回传。
+
+    logp 用采样噪声 ε 的噪声形式（-0.5ε² - log_std - log(1-a²) 校正）计算，而不是
+    由 a=atanh 反推 u 再除 σ²：float32 下 tanh 饱和区（μ 越界且 σ 收缩）反推失真，
+    二次项无界负向爆炸并污染 TD target（对齐官方 curl/curl_sac.py 的 gaussian_logprob）。"""
+    noise = torch.randn_like(mu)
+    action = torch.tanh(mu + torch.exp(log_std) * noise)
+    a = action.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+    logp = (-0.5 * noise.pow(2) - log_std
+            - 0.5 * math.log(2 * math.pi) - torch.log1p(-a * a)).sum(-1)
+    return action, logp
 
 
 def soft_update(target, source, tau):

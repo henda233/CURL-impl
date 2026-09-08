@@ -27,6 +27,7 @@ docs/
     techs/                          # 技术文档
     functions/                      # 需求文档
     gymnasium/                      # gymnasium框架的相关文档
+    curl/                           # CURL文献官方团队实现源码
 dm_control/                         # DMControl框架的源码仓库
 Gymnasium/                          # Gymnasium框架的源码仓库
 Arcade-Learning-Environment/        # ALE框架的源码仓库
