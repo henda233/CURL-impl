@@ -10,7 +10,7 @@ crop（增强变量留待 CURL 阶段）。探针实测 walker 的 episode 只�
 训练 episode。每收集一个 action-repeat 块后做一次更新（sample batch → critic →
 soft update target → actor → temperature）。模型每 eval 节点存档到
 data/sac-<时间戳>/{latest,best}.pt 并写 eval_history.jsonl（checkpoint 只含 actor
-与 meta，供演示载入）。
+与 meta，供演示载入）；控制台全部输出逐条 tee 到同目录 train_log.txt（追加）。
 
 用法：
   python src/sac/train.py --smoke              # 短跑自检（小 batch/短步数）
@@ -39,6 +39,7 @@ from dm_control import suite
 from networks import Actor, Critic, reparam_sample, soft_update
 from pipeline import FrameStack, center_crop, obs_to_tensor
 from buffer import ReplayBuffer
+import log_tee
 from profiler import Profile
 
 ACT_DIM = 6
@@ -204,6 +205,7 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_dir = ROOT / "data" / (f"sac-{stamp}-smoke" if args.smoke else f"sac-{stamp}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    log_tee.start(out_dir / "train_log.txt")
 
     print("[sac-train] out=%s" % out_dir)
     print("[sac-train] cfg device=%s profile=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g alpha_lr=%g "
@@ -327,6 +329,7 @@ def main():
     print("[sac-train] DONE env_steps=%d episodes=%d best_mean=%.3f out=%s" % (
         env_steps, episodes, best_mean if best_mean is not None else float("nan"),
         out_dir))
+    log_tee.stop()
 
 
 if __name__ == "__main__":

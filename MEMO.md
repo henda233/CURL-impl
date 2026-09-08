@@ -10,11 +10,12 @@
 
 ## 当前任务
 
-2026-09 无头渲染、性能剖析与 GPU 开关语义三批改动均未 git 提交，全部经本机自证，待 GPU 服务器实机回执后统一闭环：
+2026-09 以下改动均未 git 提交：前三批经本机自证、待 GPU 服务器实机回执后闭环；末项训练日志记录平台无关、已本机自证，git 提交后即闭环：
 - 无头默认 EGL（src/{ac,sac}/train.py）：linux 无 DISPLAY 且未设 MUJOCO_GL 时于 dm_control import 前补 `MUJOCO_GL=egl`；实机验证为不带任何 export 直跑不再报 GLFW/DISPLAY 错误。
 - SAC `--profile`（新增 src/sac/profiler.py，train.py 插桩）：分段计时 policy/phys/render/obs/sample/update 与 reset，warmup/train 两阶段统计，覆盖 max_env_steps=2000、跳过 eval、写 profile.json；CPU 端与 GPU 端 2K 同口径（batch 512）剖析由用户自跑，回执后做收集侧/更新侧瓶颈分析。
 - `--gpu` 语义改为显式（src/{ac,sac}/{train,eval_demo}.py 四文件）：`device = cuda iff args.gpu`，不指定恒 CPU，显式传但 CUDA 不可用仍 parser.error；mock CUDA 可用时 smoke 仍 device=cpu 已自证。实机验证：不带 `--gpu` cfg 应 device=cpu、带 `--gpu` 应 device=cuda。
 - 旧收尾项：GPU 实机对 uint8 直传优化（见历史任务末条）复验并回执后做最终闭环。
+- 训练日志记录：ac/sac 训练新增控制台全量输出落盘 data/<算法>-<时间戳>[-smoke]/train_log.txt——新增 src/{ac,sac}/log_tee.py 同构模块、train.py 各两处接入（mkdir 后 start、DONE 后 stop），tee 双写 stdout/stderr、原样照录、追加写入、逐条 flush、中断不丢；smoke 与终端逐字一致已自证，平台无关不需 GPU 实机。需求 [训练日志记录.md](docs/functions/训练日志记录.md)，技术 [训练日志记录技术文档.md](docs/techs/训练日志记录技术文档.md)、复盘 [训练日志记录开发复盘.md](docs/notes/训练日志记录开发复盘.md)；git 提交后本条移入历史任务。
 
 ## 历史任务（复盘与技术文档见各 docs 文件）
 
@@ -31,6 +32,7 @@
 - GPU 代码审查旁路发现、未改动的待定夺项：a) 已落地：`--gpu` 改为显式语义（2026-09，见当前任务，未提交），注意与历史行 88346af 记录（提交时为"不传则自动启用"）的差异；b) AC `evaluate` 复用 explore=True 致 eval 采样动作、与 SAC 确定性评估不一致，是否改确定性 tanh(μ) 待定；c) 多卡选卡依赖 CUDA_VISIBLE_DEVICES；d) 未设 cudnn.deterministic，GPU 训练不可逐位复现。
 - 无头渲染约束：dm_control 的 MUJOCO_GL 在其 `_render` 模块 import 瞬间冻结（engine.py 顶层 `from dm_control import _render`），设置必须发生在任何 dm_control import 之前（放 main() 无效）。
 - 模块命名避开标准库：profile.py 遮蔽 stdlib profile 致 cProfile/torch 导入失败，已改名 profiler.py；新模块名需核对无 stdlib 同名。
+- 程序内 tee 全量日志要点（2026-09 训练日志记录）：委托 isatty/fileno/encoding 等流属性、flush 转发原流、文件句柄模块级持有防提前回收、逐行 flush 使 Ctrl+C 与异常 traceback 不丢；管道重定向下终端跨流乱序不影响文件按 write 调用序记录。
 - 本机 Windows（torch CPU 版）跑同口径 batch 512 训练过慢：SAC 2K profile 运行超 15 分钟未完成已终止，此类全量剖析交给 GPU 服务器或用户执行。
 
 ## 其他重要信息

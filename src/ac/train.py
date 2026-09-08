@@ -4,7 +4,8 @@
 TD(0) advantage 更新一次：L_v = (V - (r + γV'))²，L_π = -mean(A · log π(a|s))。
 步数按环境步(physics step)计数，默认 100_000（文献 DMControl100k，Table 3：
 walker 的 action repeat=2、lr 1e-3、γ .99、eval 10 episodes）。
-模型每 eval 节点存档到 data/ac-<时间戳>/{latest,best}.pt 并写 eval_history.jsonl。
+模型每 eval 节点存档到 data/ac-<时间戳>/{latest,best}.pt 并写 eval_history.jsonl；
+控制台全部输出逐条 tee 到同目录 train_log.txt（追加）。
 
 用法：
   python src/ac/train.py --smoke                      # 短跑自检
@@ -27,6 +28,7 @@ if (sys.platform.startswith("linux") and "DISPLAY" not in os.environ
 
 from dm_control import suite
 
+import log_tee
 import networks
 from networks import ActorCritic
 from pipeline import FrameStack
@@ -163,6 +165,7 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_dir = ROOT / "data" / (f"ac-{stamp}-smoke" if args.smoke else f"ac-{stamp}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    log_tee.start(out_dir / "train_log.txt")
 
     print("[ac-train] out=%s" % out_dir)
     print("[ac-train] cfg device=%s seed=%d max_env_steps=%d action_repeat=%d lr=%g gamma=%g "
@@ -216,6 +219,7 @@ def main():
     print("[ac-train] DONE env_steps=%d episodes=%d best_mean=%.3f out=%s" % (
         env_steps, episodes, best_mean if best_mean is not None else float("nan"),
         out_dir))
+    log_tee.stop()
 
 
 if __name__ == "__main__":
